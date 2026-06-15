@@ -84,7 +84,7 @@ graph TD
     Feature -->|2. 推送至遠端分支| PR
     Bugfix -->|2. 推送至遠端分支| PR
     
-    PR -->|3. 通過 Code Review (1+人核准)| Main
+    PR -->|3. 通過 Code Review 與核准| Main
     PR -->|4. Squash & Merge| Main
     Main -->|5. 同步回本地| LocalMain
     
