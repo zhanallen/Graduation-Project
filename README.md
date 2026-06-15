@@ -67,12 +67,12 @@ pip install -r requirements.txt
 
 ```mermaid
 graph TD
-    subgraph 遠端倉庫 (Remote GitHub)
+    subgraph Remote ["遠端倉庫 (Remote GitHub)"]
         Main["main (保護分支: 唯讀/不可直接Push)"]
         PR["Pull Request (代碼審查/自動化測試)"]
     end
     
-    subgraph 本地開發 (Local Git)
+    subgraph Local ["本地開發 (Local Git)"]
         LocalMain["local main"]
         Feature["feature/功能分支"]
         Bugfix["bugfix/修正分支"]
