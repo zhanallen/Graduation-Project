@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem,
     QProgressBar, QFileDialog, QMessageBox, QFrame, QGroupBox,
-    QComboBox
+    QComboBox, QCheckBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont
@@ -44,7 +44,9 @@ class FetchInfoThread(QThread):
                 'quiet': True,
                 'no_warnings': True,
                 'audio_multistreams': True,
-                'js_runtimes': [f'node:{node_path}'] if node_path != 'node' else ['node']
+                'js_runtimes': {
+                    'node': {'path': node_path} if node_path != 'node' else {}
+                }
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -57,12 +59,14 @@ class DownloadThread(QThread):
     finished_signal = Signal(str) # target output directory
     error_signal = Signal(str)
     
-    def __init__(self, url, selected_langs, parent_dir, info):
+    def __init__(self, url, selected_langs, parent_dir, info, download_video=False, download_audio=True):
         super().__init__()
         self.url = url
         self.selected_langs = selected_langs
         self.parent_dir = parent_dir
         self.info = info
+        self.download_video = download_video
+        self.download_audio = download_audio
         self._is_cancelled = False
         
     def run(self):
@@ -122,7 +126,9 @@ class DownloadThread(QThread):
                 node_path = pyinstaller_utils.get_node_path()
                 video_opts = {
                     'format': 'bv*+ba/b',
-                    'js_runtimes': [f'node:{node_path}'] if node_path != 'node' else ['node'],
+                    'js_runtimes': {
+                        'node': {'path': node_path} if node_path != 'node' else {}
+                    },
                     'ffmpeg_location': ffmpeg_path,
                     'outtmpl': video_outtmpl,
                     'progress_hooks': [make_hook("Downloading Video", current_step)],
@@ -159,7 +165,9 @@ class DownloadThread(QThread):
                 node_path = pyinstaller_utils.get_node_path()
                 audio_opts = {
                     'format': format_id,
-                    'js_runtimes': [f'node:{node_path}'] if node_path != 'node' else ['node'],
+                    'js_runtimes': {
+                        'node': {'path': node_path} if node_path != 'node' else {}
+                    },
                     'ffmpeg_location': ffmpeg_path,
                     'outtmpl': audio_outtmpl,
                     'progress_hooks': [make_hook(f"Downloading Audio ({lang})", current_step)],
@@ -174,6 +182,53 @@ class DownloadThread(QThread):
                 
                 with yt_dlp.YoutubeDL(audio_opts) as ydl:
                     ydl.download([self.url])
+                
+                mp3_path = os.path.abspath(os.path.join(target_dir, f"{clean_title}_audio_{lang}.mp3"))
+                
+                if self.download_video:
+                    self.progress_signal.emit(f"Merging Video with Audio ({lang})...", int((current_step/total_steps)*100), "Merging...")
+                    # Find base video
+                    base_video_file = None
+                    for ext in ['.mp4', '.mkv', '.webm']:
+                        candidate = os.path.join(target_dir, f"{clean_title}{ext}")
+                        if os.path.exists(candidate):
+                            base_video_file = candidate
+                            break
+                    
+                    if base_video_file:
+                        output_video_path = os.path.join(target_dir, f"{clean_title}_{lang}.mp4")
+                        
+                        # Hide console window on Windows
+                        startupinfo = None
+                        creation_flags = 0
+                        import subprocess
+                        if os.name == 'nt':
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                            startupinfo.wShowWindow = 0  # SW_HIDE
+                            creation_flags = subprocess.CREATE_NO_WINDOW
+                            
+                        # Run ffmpeg to merge
+                        merge_cmd = [
+                            ffmpeg_path, '-y',
+                            '-i', base_video_file,
+                            '-i', mp3_path,
+                            '-map', '0:v:0',
+                            '-map', '1:a:0',
+                            '-c:v', 'copy',
+                            '-c:a', 'aac',
+                            output_video_path
+                        ]
+                        subprocess.run(merge_cmd, capture_output=True, creationflags=creation_flags, startupinfo=startupinfo)
+                    else:
+                        raise Exception("Cannot find downloaded base video for merging.")
+                
+                # Delete temporary audio file if only video is requested
+                if not self.download_audio and os.path.exists(mp3_path):
+                    try:
+                        os.remove(mp3_path)
+                    except Exception:
+                        pass
                     
                 current_step += 1
                 
@@ -262,6 +317,20 @@ class YouTubeDownloaderApp(QMainWindow):
         self.lang_group.setLayout(lang_layout)
         self.lang_group.hide()
         layout.addWidget(self.lang_group)
+        
+        # 3.5. Download Mode Options Group
+        self.mode_group = QGroupBox("📦 Download Mode Options (下載模式設定)")
+        mode_layout = QVBoxLayout()
+        self.chk_download_video = QCheckBox("📥 下載成獨立語言影片 (.mp4) - 合併視訊與該語言音軌")
+        self.chk_download_audio = QCheckBox("🎵 下載成獨立語言音檔 (.mp3) - 僅提取該語言音軌")
+        self.chk_download_audio.setChecked(True) # Checked by default
+        self.chk_download_video.setStyleSheet("color: #CBD5E1; font-size: 12px;")
+        self.chk_download_audio.setStyleSheet("color: #CBD5E1; font-size: 12px;")
+        mode_layout.addWidget(self.chk_download_video)
+        mode_layout.addWidget(self.chk_download_audio)
+        self.mode_group.setLayout(mode_layout)
+        self.mode_group.hide()
+        layout.addWidget(self.mode_group)
         
         # 4. Save Location Group
         dest_group = QGroupBox("💾 Save Location (選擇儲存路徑)")
@@ -427,6 +496,13 @@ class YouTubeDownloaderApp(QMainWindow):
                 font-size: 12px;
                 font-family: Consolas, monospace;
             }
+            QCheckBox {
+                color: #CBD5E1;
+                spacing: 5px;
+            }
+            QCheckBox:hover {
+                color: #F8FAFC;
+            }
         """
         self.setStyleSheet(stylesheet)
         
@@ -442,6 +518,7 @@ class YouTubeDownloaderApp(QMainWindow):
         # Hide layout elements
         self.metadata_card.hide()
         self.lang_group.hide()
+        self.mode_group.hide()
         self.btn_download.hide()
         self.progress_frame.show()
         self.progress_bar.setValue(0)
@@ -499,12 +576,14 @@ class YouTubeDownloaderApp(QMainWindow):
             self.lang_list.addItem(item)
             
         self.lang_group.show()
+        self.mode_group.show()
         self.btn_download.show()
         self.progress_frame.hide()
         
     def on_fetch_error(self, err_msg):
         self.btn_fetch.setEnabled(True)
         self.progress_frame.hide()
+        self.mode_group.hide()
         QMessageBox.critical(self, "Metadata Fetch Failed", f"💥 Failed to fetch metadata:\n\n{err_msg}")
         
     def select_all_langs(self):
@@ -532,6 +611,13 @@ class YouTubeDownloaderApp(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please select at least one language track to download.")
             return
             
+        download_video = self.chk_download_video.isChecked()
+        download_audio = self.chk_download_audio.isChecked()
+        
+        if not download_video and not download_audio:
+            QMessageBox.warning(self, "Warning", "Please select at least one download mode (Download as Video or Download as Audio).")
+            return
+            
         dest_dir = self.dest_edit.text()
         if not os.path.exists(dest_dir):
             QMessageBox.warning(self, "Warning", "Select folder location doesn't exist.")
@@ -547,7 +633,7 @@ class YouTubeDownloaderApp(QMainWindow):
         self.lbl_speed_eta.setText("")
         
         # Start background download thread
-        self.download_thread = DownloadThread(url, selected_langs, dest_dir, self.info)
+        self.download_thread = DownloadThread(url, selected_langs, dest_dir, self.info, download_video, download_audio)
         self.download_thread.progress_signal.connect(self.on_download_progress)
         self.download_thread.finished_signal.connect(self.on_download_success)
         self.download_thread.error_signal.connect(self.on_download_error)
@@ -559,6 +645,8 @@ class YouTubeDownloaderApp(QMainWindow):
         self.url_edit.setEnabled(enabled)
         self.dest_edit.setEnabled(enabled)
         self.lang_list.setEnabled(enabled)
+        self.chk_download_video.setEnabled(enabled)
+        self.chk_download_audio.setEnabled(enabled)
         self.btn_select_all.setEnabled(enabled)
         self.btn_deselect_all.setEnabled(enabled)
         for child in self.findChildren(QPushButton):
