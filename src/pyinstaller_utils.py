@@ -56,3 +56,27 @@ def get_node_path():
             return dev_node
         
         return "node"
+
+def get_resource_path(relative_path):
+    """
+    取得相容開發環境與 PyInstaller 打包環境 (含 _MEIPASS 臨時目錄) 的資源路徑
+    """
+    if getattr(sys, 'frozen', False):
+        # 如果是 PyInstaller 單一檔案模式，資源會被解壓到 sys._MEIPASS
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            path = os.path.join(meipass, relative_path)
+            if os.path.exists(path):
+                return path
+        # 備用：如果是 Onedir 模式，在 exe 同級或 _internal 下
+        base_dir = os.path.dirname(sys.executable)
+        path = os.path.join(base_dir, "_internal", relative_path)
+        if os.path.exists(path):
+            return path
+        path = os.path.join(base_dir, relative_path)
+        if os.path.exists(path):
+            return path
+            
+    # 開發環境：專案根目錄下的相對路徑
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, relative_path)

@@ -55,6 +55,37 @@ class ExtractionThread(QThread):
         except Exception as e:
             self.error_signal.emit(str(e))
 
+class I18nDetectionWorker(QThread):
+    finished_signal = Signal(str, object)
+    
+    def __init__(self, session_id, available_tracks, system_languages, history_lang, db_path):
+        super().__init__()
+        self.session_id = session_id
+        self.available_tracks = available_tracks
+        self.system_languages = system_languages
+        self.history_lang = history_lang
+        self.db_path = db_path
+        
+    def run(self):
+        try:
+            from i18n_detector import detect_best_locale
+            res = detect_best_locale(
+                self.available_tracks,
+                self.system_languages,
+                self.history_lang,
+                self.db_path
+            )
+            self.finished_signal.emit(self.session_id, res)
+        except Exception as e:
+            from i18n_detector import DetectionResult
+            fallback_res = DetectionResult(
+                track_key=self.available_tracks[0] if self.available_tracks else "en-US",
+                source="THREAD_ERROR",
+                confidence=0.0,
+                detail=f"Thread execution error: {str(e)}"
+            )
+            self.finished_signal.emit(self.session_id, fallback_res)
+
 class MultiTrackPlayer(QMainWindow):
     def __init__(self, initial_video_path=None):
         super().__init__()
@@ -70,6 +101,8 @@ class MultiTrackPlayer(QMainWindow):
         self.is_user_playing = False
         self.last_sync_seek = 0
         self.extract_thread = None
+        self.current_i18n_thread = None
+        self.user_manually_selected = False
         
         # Dashboard Variables
         self.extraction_start_time = 0.0
@@ -713,10 +746,45 @@ class MultiTrackPlayer(QMainWindow):
         def transition():
             self.stacked_widget.setCurrentIndex(2)
             self.load_video()
-            default_lang = 'en-US' if 'en-US' in self.audio_tracks else list(self.audio_tracks.keys())[0]
-            self.select_audio_track(default_lang)
+            temp_default = 'en-US' if 'en-US' in self.audio_tracks else list(self.audio_tracks.keys())[0]
+            self.select_audio_track(temp_default)
+            self.start_i18n_detection()
             
         QTimer.singleShot(1200, transition)
+
+    def start_i18n_detection(self):
+        self.user_manually_selected = False
+        available_tracks = list(self.audio_tracks.keys())
+        system_langs = QLocale.system().uiLanguages()
+        
+        settings = QSettings("GradProject", "StegoPlayer")
+        history_lang = settings.value("preferred_language", None)
+        
+        from pyinstaller_utils import get_resource_path
+        db_path = get_resource_path(os.path.join("for_ip", "i18n_security", "data", "dbip-country-lite.mmdb"))
+        if not os.path.exists(db_path):
+            db_path = get_resource_path(os.path.join("for_ip", "i18n_security", "data", "dbip-city-lite.mmdb"))
+            
+        session_id = self.video_path
+        
+        if self.current_i18n_thread and self.current_i18n_thread.isRunning():
+            self.current_i18n_thread.terminate()
+            self.current_i18n_thread.wait()
+            
+        self.current_i18n_thread = I18nDetectionWorker(
+            session_id, available_tracks, system_langs, history_lang, db_path
+        )
+        self.current_i18n_thread.finished_signal.connect(self.on_i18n_detection_completed)
+        self.current_i18n_thread.start()
+
+    def on_i18n_detection_completed(self, session_id, result):
+        if session_id != self.video_path:
+            return
+        if self.user_manually_selected:
+            self.append_log("使用者已手動指定音軌，忽略背景自動偵測結果。", "INFO")
+            return
+        self.append_log(f"I18N 決策鏈已完成：{result.detail} | 決策源: {result.source} (置信度: {result.confidence:.2f})", "METADATA")
+        self.select_audio_track(result.track_key)
 
     def on_extraction_error(self, video_file, err_msg):
         self.append_log(f"影像解密提示/異常: {err_msg}", "WARNING")
@@ -758,8 +826,9 @@ class MultiTrackPlayer(QMainWindow):
         def transition_fallback():
             self.stacked_widget.setCurrentIndex(2)
             self.load_video()
-            default_lang = 'en-US' if 'en-US' in self.audio_tracks else list(self.audio_tracks.keys())[0]
-            self.select_audio_track(default_lang)
+            temp_default = 'en-US' if 'en-US' in self.audio_tracks else list(self.audio_tracks.keys())[0]
+            self.select_audio_track(temp_default)
+            self.start_i18n_detection()
             
         QTimer.singleShot(1200, transition_fallback)
 
@@ -925,7 +994,14 @@ class MultiTrackPlayer(QMainWindow):
     def on_lang_item_clicked(self, item):
         lang_code = item.data(Qt.UserRole)
         if lang_code != self.current_lang:
+            self.user_manually_selected = True # User manually intervened!
             self.select_audio_track(lang_code)
+            # Save user preferred language manually selected
+            try:
+                settings = QSettings("GradProject", "StegoPlayer")
+                settings.setValue("preferred_language", lang_code)
+            except Exception:
+                pass
 
     def cleanup_temp_dir(self):
         if self.temp_dir and os.path.exists(self.temp_dir):
@@ -941,6 +1017,11 @@ class MultiTrackPlayer(QMainWindow):
         if self.extract_thread and self.extract_thread.isRunning():
             self.extract_thread.terminate()
             self.extract_thread.wait()
+            
+        # Stop background i18n thread if active
+        if self.current_i18n_thread and self.current_i18n_thread.isRunning():
+            self.current_i18n_thread.terminate()
+            self.current_i18n_thread.wait()
             
         # Release players and locks
         self.video_player.stop()
