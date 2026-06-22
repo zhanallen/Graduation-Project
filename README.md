@@ -29,6 +29,105 @@ DE/
 
 ---
 
+## 🔄 系統運作流程圖 (System Flowchart)
+
+以下為本套件的三大核心模組（下載端、封裝端、播放端）之完整資料流與運作流程圖：
+
+```mermaid
+flowchart TD
+    %% Define Styles
+    classDef download fill:#1e1b4b,stroke:#818cf8,stroke-width:1px,color:#fff;
+    classDef pack fill:#064e3b,stroke:#34d399,stroke-width:1px,color:#fff;
+    classDef play fill:#701a75,stroke:#f472b6,stroke-width:1px,color:#fff;
+    classDef data fill:#1e293b,stroke:#64748b,stroke-width:1px,color:#fff;
+
+    %% 1. 下載端
+    subgraph Downloader ["1. 下載端 (MultiAudioDownloader)"]
+        Url[輸入 YouTube / 網頁影片網址]
+        Ytdl[yt-dlp 解析影片 Metadata]
+        UISelect[使用者選擇下載語系音軌與模式]
+        DlBase[下載無音訊高畫質影片]
+        DlAudio[下載選定語系獨立音軌]
+        
+        DlMerge[FFmpeg 合併視訊與單一音軌]
+        OutLp[.mp4 獨立語系影片]
+        OutAudio[.mp3 獨立音軌檔案清單]
+    end
+    class Url,Ytdl,UISelect,DlBase,DlAudio,DlMerge download;
+    class OutLp,OutAudio data;
+
+    %% 2. 封裝端
+    subgraph Packer ["2. 封裝端 (StegoPacker)"]
+        InputCarrier[輸入無損載體影片]
+        InputAudios[選取多國語系音軌檔案]
+        PackBits[打包音訊Metadata + 二進制位元流]
+        Compress[zlib 高比例壓縮 + 寫入標頭]
+        
+        FFRead[FFmpeg 串流讀取 YUV420p 原生像素]
+        PEE_Embed[PEE 菱形預測與誤差擴張嵌入]
+        NumbaJit[Numba JIT 極速像素遍歷計算]
+        
+        PEE_Shift["預測誤差區間分類：
+        - 誤差 e 落在 [-1, 1]：嵌入資料 e' = 2e + b
+        - 誤差 e 溢出區間：向兩側平移位移以防混淆"]
+        
+        LosslessWrite[FFmpeg 封裝為 H.265 Lossless 影像編碼]
+        OutStego[產出密寫影片 Meet_Google_Pixel_9_stego.mp4]
+    end
+    class InputCarrier,InputAudios,PackBits,Compress,FFRead,PEE_Embed,NumbaJit,PEE_Shift,LosslessWrite pack;
+    class OutStego data;
+
+    %% 3. 播放端
+    subgraph Player ["3. 播放端 (StegoPlayer)"]
+        OpenStego[開啟 PEE 密寫影片]
+        FFReadPlay[FFmpeg 讀取 YUV 像素流]
+        WorkerThread[後台解密執行緒 QThread]
+        
+        PEE_Extract[PEE 預測誤差判定與資料提取]
+        PEE_Restore["像素逆向還原：
+        - 提取二進制 LSB 資料位元
+        - 誤差歸位並完全還原像素值 (Reversible)"]
+        
+        ZlibDecompress[zlib 解壓縮並拆封檔案元數據]
+        ExtractAudios[解出多國音軌輸出至臨時目錄]
+        
+        UIPlayer[加載主畫面播放器]
+        SyncTimer["音視訊同步機制 (QTimer 實時校驗)
+        - 視訊播放器 (Host Video)
+        - 音訊播放器 (Extracted Audio)"]
+        TrackSwitch[使用者介面即時切換語系音軌]
+        BitPerfect[MD5/SHA256 完美原圖像素驗證]
+    end
+    class OpenStego,FFReadPlay,WorkerThread,PEE_Extract,PEE_Restore,ZlibDecompress,ExtractAudios,UIPlayer,SyncTimer,TrackSwitch,BitPerfect play;
+
+    %% 連線關係
+    Url --> Ytdl
+    Ytdl --> UISelect
+    UISelect -->|下載視訊| DlBase
+    UISelect -->|下載音訊| DlAudio
+    DlBase & DlAudio -->|模式 A: 合併影片| DlMerge
+    DlMerge --> OutLp
+    DlAudio -->|模式 B: 僅音軌| OutAudio
+
+    OutAudio --> InputAudios
+    InputCarrier --> FFRead
+    InputAudios --> PackBits --> Compress
+    Compress & FFRead --> PEE_Embed
+    PEE_Embed --> NumbaJit --> PEE_Shift --> LosslessWrite
+    LosslessWrite --> OutStego
+
+    OutStego --> OpenStego
+    OpenStego --> FFReadPlay & WorkerThread
+    WorkerThread --> PEE_Extract --> PEE_Restore --> ZlibDecompress --> ExtractAudios
+    ExtractAudios --> UIPlayer
+    FFReadPlay --> UIPlayer
+    UIPlayer --> SyncTimer
+    UIPlayer --> TrackSwitch
+    PEE_Restore --> BitPerfect
+```
+
+---
+
 ## 🛠️ 開發環境建置
 
 ### 1. 安裝 Python 依賴
