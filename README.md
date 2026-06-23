@@ -29,102 +29,143 @@ DE/
 
 ---
 
-## 🔄 系統運作流程圖 (System Flowchart)
+## 🔄 預測誤差擴張 (PEE) 藏密與解密核心原理流程圖
 
-以下為本套件的三大核心模組（下載端、封裝端、播放端）之完整資料流與運作流程圖：
+以下為本專案核心演算法 **可逆資料隱寫 (Reversible Data Hiding, RDH)** 與 **預測誤差擴張 (PEE)** 的詳細藏密（嵌入）與解密（還原）運作邏輯：
 
 ```mermaid
 flowchart TD
     %% Define Styles
-    classDef download fill:#1e1b4b,stroke:#818cf8,stroke-width:1px,color:#fff;
-    classDef pack fill:#064e3b,stroke:#34d399,stroke-width:1px,color:#fff;
-    classDef play fill:#701a75,stroke:#f472b6,stroke-width:1px,color:#fff;
-    classDef data fill:#1e293b,stroke:#64748b,stroke-width:1px,color:#fff;
+    classDef embed fill:#064e3b,stroke:#34d399,stroke-width:1px,color:#fff;
+    classDef extract fill:#581c87,stroke:#c084fc,stroke-width:1px,color:#fff;
+    classDef decision fill:#1e293b,stroke:#475569,stroke-width:1px,color:#fff;
+    classDef math fill:#0f172a,stroke:#38bdf8,stroke-width:1px,color:#fff;
 
-    %% 1. 下載端
-    subgraph Downloader ["1. 下載端 (MultiAudioDownloader)"]
-        Url[輸入 YouTube / 網頁影片網址]
-        Ytdl[yt-dlp 解析影片 Metadata]
-        UISelect[使用者選擇下載語系音軌與模式]
-        DlBase[下載無音訊高畫質影片]
-        DlAudio[下載選定語系獨立音軌]
+    subgraph Embedding ["左：PEE 藏密嵌入原理 (Embedding Process)"]
+        E_Start([輸入原始 Y 通道像素 p 及其預測值 p̂])
+        E_Predict["預測值 p̂ = G[i-1, j] (上方像素)
+        當前像素 p = G[i, j]"]
+        E_CheckBound{"安全邊界檢查：
+        10 <= p̂ <= 245 ?"}
+        E_SkipBound[跳過不嵌入，像素保持原值]
+        E_CalcError["計算原始預測誤差：
+        e = p - p̂"]
         
-        DlMerge[FFmpeg 合併視訊與單一音軌]
-        OutLp[.mp4 獨立語系影片]
-        OutAudio[.mp3 獨立音軌檔案清單]
+        E_CheckRange{"判斷預測誤差 e 的區間"}
+        
+        %% 區間分類
+        E_Range_Expand["誤差落在可嵌入區間：
+        -1 <= e <= 1"]
+        E_ReadBit[讀取 1 bit 秘密資料 b]
+        E_CalcNewError["計算擴張後的新誤差 e'：
+        - 若 e = -1：e' = -2 + b
+        - 若 e = 0 ：e' = b
+        - 若 e = 1 ：e' = 2 + b
+        (誤差值擴張為原來的兩倍，並融入 b)"]
+        
+        E_Range_Shift_Pos["誤差大於 1 (e > 1)"]
+        E_Shift_Pos["誤差平移以避開重疊：
+        e' = e + 2"]
+        
+        E_Range_Shift_Neg["誤差小於 -1 (e < -1)"]
+        E_Shift_Neg["誤差平移以避開重疊：
+        e' = e - 2"]
+        
+        E_Reconstruct["重新計算隱寫像素值：
+        p' = p̂ + e'"]
+        E_WritePixel[寫入載體像素 G[i, j] = p']
+        E_End([輸出 Stego 隱寫幀])
     end
-    class Url,Ytdl,UISelect,DlBase,DlAudio,DlMerge download;
-    class OutLp,OutAudio data;
+    class E_Start,E_Predict,E_SkipBound,E_CalcError,E_Range_Expand,E_ReadBit,E_CalcNewError,E_Range_Shift_Pos,E_Shift_Pos,E_Range_Shift_Neg,E_Shift_Neg,E_Reconstruct,E_WritePixel,E_End embed;
+    class E_CheckBound,E_CheckRange decision;
 
-    %% 2. 封裝端
-    subgraph Packer ["2. 封裝端 (StegoPacker)"]
-        InputCarrier[輸入無損載體影片]
-        InputAudios[選取多國語系音軌檔案]
-        PackBits[打包音訊Metadata + 二進制位元流]
-        Compress[zlib 高比例壓縮 + 寫入標頭]
+    subgraph Extraction ["右：PEE 解密與無損還原原理 (Extraction & Restoration)"]
+        X_Start([輸入 Stego 隱寫幀像素 p' 及其預測值 p̂])
+        X_Predict["預測值 p̂ = G[i-1, j] (上方像素)
+        隱寫像素 p' = G[i, j]"]
+        X_CheckBound{"安全邊界檢查：
+        10 <= p̂ <= 245 ?"}
+        X_SkipBound[跳過不處理，像素保持原值]
+        X_CalcError["計算含密預測誤差：
+        e' = p' - p̂"]
         
-        FFRead[FFmpeg 串流讀取 YUV420p 原生像素]
-        PEE_Embed[PEE 菱形預測與誤差擴張嵌入]
-        NumbaJit[Numba JIT 極速像素遍歷計算]
+        X_CheckEmbed{"判斷誤差 e' 是否含有嵌入資料？
+        -2 <= e' <= 3 ?"}
         
-        PEE_Shift["預測誤差區間分類：
-        - 誤差 e 落在 [-1, 1]：嵌入資料 e' = 2e + b
-        - 誤差 e 溢出區間：向兩側平移位移以防混淆"]
+        %% 資料提取
+        X_Extract_Data["是 (落在 [-2, 3] 區間)"]
+        X_GetBit["提取秘密位元 b (由 e' 的奇偶性決定)：
+        - 若 e' 為偶數 {-2, 0, 2}：b = 0
+        - 若 e' 為奇數 {-1, 1, 3}：b = 1"]
+        X_PushBuffer[將 b 寫入二進制解密緩衝區]
         
-        LosslessWrite[FFmpeg 封裝為 H.265 Lossless 影像編碼]
-        OutStego[產出密寫影片 Meet_Google_Pixel_9_stego.mp4]
+        X_No_Data[否 (屬於平移區間)]
+        
+        %% 逆向像素還原
+        X_Restore_Loop["逆向遍歷所有像素進行像素還原 (Reversibility)"]
+        X_CheckRange{"根據 e' 還原原始誤差 e"}
+        
+        X_Restore_Embed["e' 落在 [-2, 3]：
+        - 若 e' 為 -2 或 -1：e = -1
+        - 若 e' 為 0 或 1  ：e = 0
+        - 若 e' 為 2 或 3  ：e = 1"]
+        
+        X_Restore_Shift_Pos["e' >= 4：
+        逆向移回原始位置
+        e = e' - 2"]
+        
+        X_Restore_Shift_Neg["e' <= -4：
+        逆向移回原始位置
+        e = e' + 2"]
+        
+        X_RecoverPixel["計算還原像素值：
+        p = p̂ + e"]
+        X_WriteRecovered[還原寫入載體 G[i, j] = p]
+        X_End([100% 位元還原原始載體幀])
     end
-    class InputCarrier,InputAudios,PackBits,Compress,FFRead,PEE_Embed,NumbaJit,PEE_Shift,LosslessWrite pack;
-    class OutStego data;
+    class X_Start,X_Predict,X_SkipBound,X_CalcError,X_Extract_Data,X_GetBit,X_PushBuffer,X_No_Data,X_Restore_Loop,X_Restore_Embed,X_Restore_Shift_Pos,X_Restore_Shift_Neg,X_RecoverPixel,X_WriteRecovered,X_End extract;
+    class X_CheckBound,X_CheckEmbed,X_CheckRange decision;
 
-    %% 3. 播放端
-    subgraph Player ["3. 播放端 (StegoPlayer)"]
-        OpenStego[開啟 PEE 密寫影片]
-        FFReadPlay[FFmpeg 讀取 YUV 像素流]
-        WorkerThread[後台解密執行緒 QThread]
-        
-        PEE_Extract[PEE 預測誤差判定與資料提取]
-        PEE_Restore["像素逆向還原：
-        - 提取二進制 LSB 資料位元
-        - 誤差歸位並完全還原像素值 (Reversible)"]
-        
-        ZlibDecompress[zlib 解壓縮並拆封檔案元數據]
-        ExtractAudios[解出多國音軌輸出至臨時目錄]
-        
-        UIPlayer[加載主畫面播放器]
-        SyncTimer["音視訊同步機制 (QTimer 實時校驗)
-        - 視訊播放器 (Host Video)
-        - 音訊播放器 (Extracted Audio)"]
-        TrackSwitch[使用者介面即時切換語系音軌]
-        BitPerfect[MD5/SHA256 完美原圖像素驗證]
-    end
-    class OpenStego,FFReadPlay,WorkerThread,PEE_Extract,PEE_Restore,ZlibDecompress,ExtractAudios,UIPlayer,SyncTimer,TrackSwitch,BitPerfect play;
+    %% 關聯線段
+    E_Start --> E_Predict
+    E_Predict --> E_CheckBound
+    E_CheckBound -->|否| E_SkipBound
+    E_CheckBound -->|是| E_CalcError
+    E_CalcError --> E_CheckRange
+    
+    E_CheckRange --> E_Range_Expand
+    E_Range_Expand --> E_ReadBit --> E_CalcNewError --> E_Reconstruct
+    
+    E_CheckRange --> E_Range_Shift_Pos
+    E_Range_Shift_Pos --> E_Shift_Pos --> E_Reconstruct
+    
+    E_CheckRange --> E_Range_Shift_Neg
+    E_Range_Shift_Neg --> E_Shift_Neg --> E_Reconstruct
+    
+    E_Reconstruct --> E_WritePixel --> E_End
 
-    %% 連線關係
-    Url --> Ytdl
-    Ytdl --> UISelect
-    UISelect -->|下載視訊| DlBase
-    UISelect -->|下載音訊| DlAudio
-    DlBase & DlAudio -->|模式 A: 合併影片| DlMerge
-    DlMerge --> OutLp
-    DlAudio -->|模式 B: 僅音軌| OutAudio
+    X_Start --> X_Predict
+    X_Predict --> X_CheckBound
+    X_CheckBound -->|否| X_SkipBound
+    X_CheckBound -->|是| X_CalcError
+    X_CalcError --> X_CheckEmbed
+    
+    X_CheckEmbed -->|是| X_Extract_Data
+    X_Extract_Data --> X_GetBit --> X_PushBuffer --> X_Restore_Loop
+    X_CheckEmbed -->|否| X_No_Data --> X_Restore_Loop
+    
+    X_Restore_Loop --> X_CheckRange
+    X_CheckRange --> X_Restore_Embed
+    X_CheckRange --> X_Restore_Shift_Pos
+    X_CheckRange --> X_Restore_Shift_Neg
+    
+    X_Restore_Embed & X_Restore_Shift_Pos & X_Restore_Shift_Neg --> X_RecoverPixel
+    X_RecoverPixel --> X_WriteRecovered --> X_End
 
-    OutAudio --> InputAudios
-    InputCarrier --> FFRead
-    InputAudios --> PackBits --> Compress
-    Compress & FFRead --> PEE_Embed
-    PEE_Embed --> NumbaJit --> PEE_Shift --> LosslessWrite
-    LosslessWrite --> OutStego
-
-    OutStego --> OpenStego
-    OpenStego --> FFReadPlay & WorkerThread
-    WorkerThread --> PEE_Extract --> PEE_Restore --> ZlibDecompress --> ExtractAudios
-    ExtractAudios --> UIPlayer
-    FFReadPlay --> UIPlayer
-    UIPlayer --> SyncTimer
-    UIPlayer --> TrackSwitch
-    PEE_Restore --> BitPerfect
+    %% 跨欄關聯 (說明可逆性)
+    E_End -.->|密寫影片傳輸| X_Start
 ```
+
 
 ---
 
