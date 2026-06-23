@@ -42,12 +42,12 @@ flowchart TD
     classDef math fill:#0f172a,stroke:#38bdf8,stroke-width:1px,color:#fff;
 
     subgraph Embedding ["左：PEE 藏密嵌入原理 (Embedding Process)"]
-        E_Start([輸入原始 Y 通道像素 p 及其預測值 p̂])
+        E_Start(["輸入原始 Y 通道像素 p 及其預測值 p̂"])
         E_Predict["預測值 p̂ = G[i-1, j] (上方像素)
         當前像素 p = G[i, j]"]
         E_CheckBound{"安全邊界檢查：
         10 <= p̂ <= 245 ?"}
-        E_SkipBound[跳過不嵌入，像素保持原值]
+        E_SkipBound["跳過不嵌入，像素保持原值"]
         E_CalcError["計算原始預測誤差：
         e = p - p̂"]
         
@@ -56,7 +56,7 @@ flowchart TD
         %% 區間分類
         E_Range_Expand["誤差落在可嵌入區間：
         -1 <= e <= 1"]
-        E_ReadBit[讀取 1 bit 秘密資料 b]
+        E_ReadBit["讀取 1 bit 秘密資料 b"]
         E_CalcNewError["計算擴張後的新誤差 e'：
         - 若 e = -1：e' = -2 + b
         - 若 e = 0 ：e' = b
@@ -73,19 +73,19 @@ flowchart TD
         
         E_Reconstruct["重新計算隱寫像素值：
         p' = p̂ + e'"]
-        E_WritePixel[寫入載體像素 G[i, j] = p']
-        E_End([輸出 Stego 隱寫幀])
+        E_WritePixel["寫入載體像素 G[i, j] = p'"]
+        E_End(["輸出 Stego 隱寫幀"])
     end
     class E_Start,E_Predict,E_SkipBound,E_CalcError,E_Range_Expand,E_ReadBit,E_CalcNewError,E_Range_Shift_Pos,E_Shift_Pos,E_Range_Shift_Neg,E_Shift_Neg,E_Reconstruct,E_WritePixel,E_End embed;
     class E_CheckBound,E_CheckRange decision;
 
     subgraph Extraction ["右：PEE 解密與無損還原原理 (Extraction & Restoration)"]
-        X_Start([輸入 Stego 隱寫幀像素 p' 及其預測值 p̂])
+        X_Start(["輸入 Stego 隱寫幀像素 p' 及其預測值 p̂"])
         X_Predict["預測值 p̂ = G[i-1, j] (上方像素)
         隱寫像素 p' = G[i, j]"]
         X_CheckBound{"安全邊界檢查：
         10 <= p̂ <= 245 ?"}
-        X_SkipBound[跳過不處理，像素保持原值]
+        X_SkipBound["跳過不處理，像素保持原值"]
         X_CalcError["計算含密預測誤差：
         e' = p' - p̂"]
         
@@ -97,9 +97,9 @@ flowchart TD
         X_GetBit["提取秘密位元 b (由 e' 的奇偶性決定)：
         - 若 e' 為偶數 {-2, 0, 2}：b = 0
         - 若 e' 為奇數 {-1, 1, 3}：b = 1"]
-        X_PushBuffer[將 b 寫入二進制解密緩衝區]
+        X_PushBuffer["將 b 寫入二進制解密緩衝區"]
         
-        X_No_Data[否 (屬於平移區間)]
+        X_No_Data["否 (屬於平移區間)"]
         
         %% 逆向像素還原
         X_Restore_Loop["逆向遍歷所有像素進行像素還原 (Reversibility)"]
@@ -120,8 +120,8 @@ flowchart TD
         
         X_RecoverPixel["計算還原像素值：
         p = p̂ + e"]
-        X_WriteRecovered[還原寫入載體 G[i, j] = p]
-        X_End([100% 位元還原原始載體幀])
+        X_WriteRecovered["還原寫入載體 G[i, j] = p"]
+        X_End(["100% 位元還原原始載體幀"])
     end
     class X_Start,X_Predict,X_SkipBound,X_CalcError,X_Extract_Data,X_GetBit,X_PushBuffer,X_No_Data,X_Restore_Loop,X_Restore_Embed,X_Restore_Shift_Pos,X_Restore_Shift_Neg,X_RecoverPixel,X_WriteRecovered,X_End extract;
     class X_CheckBound,X_CheckEmbed,X_CheckRange decision;
