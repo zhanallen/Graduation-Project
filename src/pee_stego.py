@@ -184,7 +184,7 @@ def pee_embed_core_numba(G, bits_array, bit_idx, total_bits, height, width):
     return bit_idx
 
 @njit(nogil=True, cache=True)
-def pee_extract_core_numba(G, bit_buffer, bit_idx, target_bits, height, width):
+def pee_extract_core_numba(G, bit_buffer, bit_idx, target_bits, height, width, max_possible_bits):
     stop_i = height - 1
     stop_j = width - 1
     finished = False
@@ -213,7 +213,13 @@ def pee_extract_core_numba(G, bit_buffer, bit_idx, target_bits, height, width):
                 if target_bits == 0 and bit_idx == 32:
                     val_len = 0
                     for k in range(32): val_len = (val_len << 1) | bit_buffer[k]
-                    if 0 < val_len < 100_000_000:
+                    
+                    # Zero-Trust safety bounds check for payload memory allocation
+                    upper_bound = 400_000_000  # 50MB absolute cap
+                    if 0 < max_possible_bits < upper_bound:
+                        upper_bound = max_possible_bits
+                        
+                    if 0 < val_len * 8 <= upper_bound:
                         target_bits = 32 + val_len * 8
                     else:
                         error_code = 1
@@ -421,8 +427,8 @@ def decode_video_multi(video_path, output_dir, progress_callback=None):
         startupinfo=startupinfo
     )
 
-    # 800MB 靜態緩衝區 (支援 100MB 檔案)
-    bit_buffer = np.zeros(800_000_000, dtype=np.uint8)
+    # 10MB lightweight initial buffer (dynamically resizes up to 50MB or physical limit)
+    bit_buffer = np.zeros(80_000_000, dtype=np.uint8)
 
     bit_idx = 0
     target_bits = 0
@@ -459,9 +465,12 @@ def decode_video_multi(video_path, output_dir, progress_callback=None):
         if not finished_extracting:
             G = frame[:Y_size].reshape((height, width)).astype(np.int16)
 
+            # Enforce max possible bits from the video carrier size
+            max_possible_bits = total_frames * width * height
+
             # 🌟 呼叫 Numba 加速引擎，瞬間掃描並還原數百萬像素
             bit_idx, target_bits, finished_extracting, error_code = pee_extract_core_numba(
-                G, bit_buffer, bit_idx, target_bits, height, width
+                G, bit_buffer, bit_idx, target_bits, height, width, max_possible_bits
             )
 
             # 如果解析出來的目標位元數大於目前緩衝區大小，動態擴容

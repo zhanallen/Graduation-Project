@@ -127,6 +127,20 @@ def get_online_geoip(timeout=1.5):
             continue
     return None, None
 
+def get_system_proxy_info() -> dict:
+    """
+    Detects system-level proxy configurations with zero dependencies.
+    """
+    try:
+        import urllib.request
+        proxies = urllib.request.getproxies()
+        if proxies:
+            details = ", ".join([f"{k}: {v}" for k, v in proxies.items()])
+            return {"proxy_detected": True, "details": details}
+    except Exception:
+        pass
+    return {"proxy_detected": False, "details": "Direct Connection"}
+
 def normalize_locale(locale_str):
     """
     Normalizes locale separator and case.
@@ -415,7 +429,13 @@ def detect_best_locale(
         DefaultFallbackStrategy()
     ]
     detector = I18nDetector(strategies)
-    return detector.execute(available_tracks)
+    res = detector.execute(available_tracks)
+    
+    # Enrich metadata with client-side Zero-Trust proxy info
+    proxy_info = get_system_proxy_info()
+    res.metadata.update(proxy_info)
+    
+    return res
 
 
 if __name__ == "__main__":
