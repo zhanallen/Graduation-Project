@@ -745,7 +745,7 @@ class MultiTrackPlayer(QMainWindow):
         self.append_log("初始化 DE 多軌藏密播放系統...", "INFO")
         self.append_log(f"載入載體影片檔: {filename}", "INFO")
         self.append_log("啟動 FFmpeg YUV420p 原生像素讀取管線...", "PROCESS")
-        self.append_log("載入 Numba JIT 極速解密引擎 (pee_extract_core_numba)...", "PROCESS")
+        self.append_log("載入 Numba JIT 極速解密引擎 (Coltuc coltuc_extract_restore_core_numba)...", "PROCESS")
         
         # Setup paths
         self.temp_dir = pyinstaller_utils.get_temp_dir("temp_extracted_tracks")

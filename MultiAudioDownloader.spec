@@ -14,7 +14,10 @@ pyside6_dir = os.path.join('.venv', 'Lib', 'site-packages', 'PySide6')
 dll_files = glob.glob(os.path.join(pyside6_dir, '*140*.dll'))
 vc_binaries = [(dll, '.') for dll in dll_files]
 
-datas = [('node/node.exe', 'node')] + ffmpeg_datas + ytdlp_datas
+node_path = 'node/node.exe'
+datas = ffmpeg_datas + ytdlp_datas
+if os.path.exists(node_path):
+    datas = [(node_path, 'node')] + datas
 binaries = vc_binaries + ffmpeg_binaries + ytdlp_binaries
 hiddenimports = ['pyinstaller_utils'] + ffmpeg_hiddenimports + ytdlp_hiddenimports
 

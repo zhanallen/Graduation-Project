@@ -138,20 +138,25 @@ def estimate_capacity(video_path, sample_size=15):
         if not ret: break
 
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = gray_frame.shape
         G = gray_frame.astype(np.int16)
-        p_hat = G[:-1, :]
-        p = G[1:, :]
 
-        safe_mask = (p_hat >= 10) & (p_hat <= 245)
-        e = p - p_hat
-        total_embeddable_bits += np.sum((e >= -1) & (e <= 1) & safe_mask)
+        # Coltuc 容量 = 不相交 2x2 區塊中「可擴張 (預測誤差 ∈ [-1,1])」的塊數
+        # (JPEG4 預測 x̂ = n + w − nw，process band [2,253])
+        resv_rows = 2
+        sm_buf = np.empty(((h - resv_rows) // 2) * (w // 2), dtype=np.int8)
+        _nblocks, nexp = coltuc_classify_numba(G, resv_rows, h, w, sm_buf)
+        total_embeddable_bits += nexp
         actual_read_count += 1
 
     cap.release()
     if actual_read_count == 0: return 0
 
     avg_bits_per_frame = total_embeddable_bits / actual_read_count
-    return max(0, (int(avg_bits_per_frame * total_frames) // 8) - 4)
+    # 預留每幀 location map 與保留區開銷 (保守抓 ~2KB/幀)，再扣全域標頭
+    overhead_per_frame = 16000
+    usable = max(0, avg_bits_per_frame - overhead_per_frame)
+    return max(0, (int(usable * total_frames) // 8) - 4)
 
 # ==========================================
 # --- 3. Numba 極速引擎 ---
@@ -259,6 +264,193 @@ def pee_extract_core_numba(G, bit_buffer, bit_idx, target_bits, height, width, m
                 G[i, j] = p_hat[j] + e
 
     return bit_idx, target_bits, finished, error_code
+
+# ==========================================================================
+# --- 3b. Coltuc (IEEE TIP 2012) 低失真可逆變換 引擎 ---
+#
+#   參考文獻: D. Coltuc, "Low Distortion Transform for Reversible
+#             Watermarking," IEEE Trans. Image Process., vol.21, no.1,
+#             pp.412-417, Jan. 2012.
+#
+#   相較於上方「北向單像素 PEE」(pee_*_numba)，本引擎實作論文核心：
+#     1. JPEG4 預測器       x̂ = n + w − nw  (北 + 西 − 西北)
+#     2. 不相交 2x2 區塊上，將擴張後的預測誤差「四等分散」到整個預測脈絡
+#        (式 4-5)，使單位元嵌入的方均失真由 ~p² 降至 ~p²/4 (PSNR +4~5dB)。
+#     3. process band [2,253]：僅在四個像素皆落於此區間的區塊嵌入，
+#        確保每像素變動 ≤ ±1、絕不溢位 (無需 np.clip，嚴格可逆)。
+#     4. location map：以「保留前數列像素的 LSB 旁通道」存放壓縮後的
+#        skip-map，使解碼端可『確定性』判定每塊 process/skip，
+#        徹底消除盲分類在邊界區塊的歧義 → 100% 位元級 (MD5) 還原。
+#
+#   2x2 區塊布局 (不相交)：
+#        nw = Y[r , c ]   n = Y[r , c+1]
+#        w  = Y[r+1,c ]   x = Y[r+1,c+1]   ← x 為當前像素
+# ==========================================================================
+COLTUC_LO = 2
+COLTUC_HI = 253
+
+@njit(nogil=True, cache=True)
+def coltuc_classify_numba(Y, resv_rows, h, w, sm):
+    """掃描 [resv_rows, h) 的不相交 2x2 區塊，填入 skip-map (1=跳過,0=可處理)。
+    回傳 (區塊總數, 可擴張區塊數=容量bit)。各區塊獨立，p 值與資料無關。"""
+    idx = 0
+    nexp = 0
+    r = resv_rows
+    while r < h - 1:
+        c = 0
+        while c < w - 1:
+            nw = Y[r, c]; n = Y[r, c + 1]; ww = Y[r + 1, c]; x = Y[r + 1, c + 1]
+            if (nw < COLTUC_LO or nw > COLTUC_HI or n < COLTUC_LO or n > COLTUC_HI or
+                    ww < COLTUC_LO or ww > COLTUC_HI or x < COLTUC_LO or x > COLTUC_HI):
+                sm[idx] = 1
+            else:
+                sm[idx] = 0
+                p = x - (n + ww - nw)
+                if -1 <= p <= 1:
+                    nexp += 1
+            idx += 1
+            c += 2
+        r += 2
+    return idx, nexp
+
+@njit(nogil=True, cache=True)
+def coltuc_embed_core_numba(Y, sm, stream, total, resv_rows, h, w):
+    """把 stream[:total] 嵌入可處理區塊；可擴張塊載 1 bit、其餘平移。回傳已嵌入 bit 數。"""
+    cur = 0
+    idx = 0
+    r = resv_rows
+    while r < h - 1 and cur < total:
+        c = 0
+        while c < w - 1 and cur < total:
+            if sm[idx] == 0:
+                nw = Y[r, c]; n = Y[r, c + 1]; ww = Y[r + 1, c]; x = Y[r + 1, c + 1]
+                xhat = n + ww - nw
+                p = x - xhat
+                if -1 <= p <= 1:
+                    b = stream[cur]; cur += 1
+                    P = 2 * p + b
+                elif p > 1:
+                    P = p + 2
+                else:
+                    P = p - 2
+                d = P - p
+                # 四等分 (式4)：u_x,u_w,u_nw,u_n 之和恆為 d，floor 除法
+                ux = d // 4; uw = (d + 1) // 4; unw = (d + 2) // 4; un = (d + 3) // 4
+                Y[r + 1, c + 1] = x + ux       # X  = x + u_x
+                Y[r, c + 1]     = n - un        # N  = n − u_n
+                Y[r + 1, c]     = ww - uw       # W  = w − u_w
+                Y[r, c]         = nw + unw      # NW = nw + u_nw
+            idx += 1
+            c += 2
+        r += 2
+    return cur
+
+@njit(nogil=True, cache=True)
+def coltuc_extract_restore_core_numba(Y, sm, stream_out, total, resv_rows, h, w):
+    """前向單趟：自可處理區塊提取資料 (P∈[-2,3] 者) 並就地逆變換還原原始像素。
+    到達 total bit 即停 (與嵌入端停止點一致)。回傳已提取 bit 數。各 2x2 塊獨立故順序無關。"""
+    cur = 0
+    idx = 0
+    r = resv_rows
+    while r < h - 1 and cur < total:
+        c = 0
+        while c < w - 1 and cur < total:
+            if sm[idx] == 0:
+                nw = Y[r, c]; n = Y[r, c + 1]; ww = Y[r + 1, c]; x = Y[r + 1, c + 1]
+                xhat = n + ww - nw
+                P = x - xhat                    # = 2p + b (式6-7)
+                if -2 <= P <= 3:
+                    stream_out[cur] = P - 2 * (P // 2)   # b = LSB(P)
+                    cur += 1
+                    p = P // 2
+                elif P >= 4:
+                    p = P - 2
+                else:
+                    p = P + 2
+                d = P - p
+                ux = d // 4; uw = (d + 1) // 4; unw = (d + 2) // 4; un = (d + 3) // 4
+                Y[r + 1, c + 1] = x - ux        # 逆 (式9)
+                Y[r, c + 1]     = n + un
+                Y[r + 1, c]     = ww + uw
+                Y[r, c]         = nw - unw
+            idx += 1
+            c += 2
+        r += 2
+    return cur
+
+# --- Coltuc 每幀協調器 (Python 端負責 zlib/struct 與 LSB 旁通道) ---
+#   保留區 header 布局 (bit 序)：
+#     [16b resv_rows][32b 區塊數][32b cmap位元組數][32b 本幀payload bit數][cmap...]
+_COLTUC_HDR_BYTES = 14   # 2 + 4 + 4 + 4
+
+def coltuc_embed_frame(frame, Y_size, h, w, bits_array, gpos):
+    """於單一 YUV 幀的 Y 平面嵌入全域位元流 bits_array[gpos:] 的一段。
+    就地修改 frame。回傳 (新的 gpos, 本幀是否有使用)。"""
+    # 1. 決定保留列數與 skip-map (cmap 會隨保留列數微幅變動，迭代收斂)
+    resv_rows = 2
+    for _ in range(8):
+        Y = frame[:Y_size].reshape((h, w)).astype(np.int16)
+        sm_buf = np.empty(((h - resv_rows) // 2) * (w // 2), dtype=np.int8)
+        nblocks, nexp = coltuc_classify_numba(Y, resv_rows, h, w, sm_buf)
+        sm = sm_buf[:nblocks]
+        cmap = zlib.compress(np.packbits(sm).tobytes(), 9)
+        clen = len(cmap)
+        nresv = _COLTUC_HDR_BYTES * 8 + clen * 8
+        need_rows = (nresv + w - 1) // w
+        if need_rows % 2 == 1:
+            need_rows += 1
+        if need_rows <= resv_rows:
+            break
+        resv_rows = need_rows
+
+    capacity = nexp
+    if capacity <= nresv + 16:        # 容量連自身保留資料都放不下 → 本幀不用
+        return gpos, False
+
+    n_chunk = min(len(bits_array) - gpos, capacity - nresv)
+
+    # 2. 組 header bit，寫入前 nresv 個 Y 像素的 LSB (旁通道)，保存被覆蓋的原始 LSB
+    header = struct.pack('>H', resv_rows) + struct.pack('>III', nblocks, clen, n_chunk) + cmap
+    map_bits = np.unpackbits(np.frombuffer(header, dtype=np.uint8))
+    nresv = len(map_bits)
+    yflat = frame[:Y_size]
+    saved_lsb = (yflat[:nresv] & 1).copy()
+    yflat[:nresv] = (yflat[:nresv] & 0xFE) | map_bits.astype(np.uint8)
+
+    # 3. Coltuc 變換嵌入 (保留列不參與；stream = 被覆蓋LSB + payload段)
+    Y = frame[:Y_size].reshape((h, w)).astype(np.int16)
+    stream = np.concatenate([saved_lsb.astype(np.uint8), bits_array[gpos:gpos + n_chunk]])
+    total = len(stream)
+    cur = coltuc_embed_core_numba(Y, sm, stream, total, resv_rows, h, w)
+    if cur < total:
+        raise ValueError(f"💥 Coltuc 幀容量計算異常：{total - cur} bits 未嵌入")
+    # process band [2,253] 保證像素恆在 [0,255]，無需 clip；保留列已含 header 不被覆蓋
+    frame[:Y_size] = Y.ravel().astype(np.uint8)
+    return gpos + n_chunk, True
+
+def coltuc_decode_frame(frame, Y_size, h, w):
+    """自單一 stego 幀提取本幀 payload 段並就地還原 Y 平面。回傳該段 payload bit 陣列。"""
+    yflat = frame[:Y_size]
+    hb = yflat[:_COLTUC_HDR_BYTES * 8] & 1
+    hbytes = np.packbits(hb).tobytes()
+    resv_rows = struct.unpack('>H', hbytes[0:2])[0]
+    nblocks, clen, n_chunk = struct.unpack('>III', hbytes[2:14])
+    nresv = _COLTUC_HDR_BYTES * 8 + clen * 8
+    cmap = np.packbits(yflat[_COLTUC_HDR_BYTES * 8:nresv] & 1).tobytes()
+    sm = np.unpackbits(np.frombuffer(zlib.decompress(cmap), dtype=np.uint8))[:nblocks].astype(np.int8)
+
+    total = nresv + n_chunk
+    Y = frame[:Y_size].reshape((h, w)).astype(np.int16)
+    stream_out = np.empty(total, dtype=np.uint8)
+    cur = coltuc_extract_restore_core_numba(Y, sm, stream_out, total, resv_rows, h, w)
+    if cur < total:
+        raise ValueError("💥 Coltuc 幀提取失敗：影片可能已被壓縮失真或非本套件封裝。")
+
+    saved_lsb = stream_out[:nresv]
+    payload_chunk = stream_out[nresv:nresv + n_chunk]
+    frame[:Y_size] = Y.ravel().astype(np.uint8)            # 寫回還原後像素
+    frame[:nresv] = (frame[:nresv] & 0xFE) | saved_lsb     # 還原保留區原始 LSB
+    return payload_chunk
 
 # ==========================================
 # --- 4. 記憶體管線化多檔案編碼 ---
@@ -368,9 +560,8 @@ def encode_video_multi(video_path, file_paths, output_path, progress_callback=No
         frame_count += 1
 
         if bit_idx < total_bits:
-            G = frame[:Y_size].reshape((height, width)).astype(np.int16)
-            bit_idx = pee_embed_core_numba(G, bits_array, bit_idx, total_bits, height, width)
-            frame[:Y_size] = np.clip(G, 0, 255).ravel().astype(np.uint8)
+            # Coltuc (TIP 2012) 低失真可逆變換：JPEG4 預測 + 2x2 脈絡分散 + skip-map
+            bit_idx, _used = coltuc_embed_frame(frame, Y_size, height, width, bits_array, bit_idx)
 
         write_queue.put(frame)
 
@@ -463,22 +654,40 @@ def decode_video_multi(video_path, output_dir, progress_callback=None):
         frame_count += 1
 
         if not finished_extracting:
-            G = frame[:Y_size].reshape((height, width)).astype(np.int16)
+            # 🌟 Coltuc 引擎：自本幀提取 payload 段並就地還原像素 (skip-map 確定性判定)
+            try:
+                payload_chunk = coltuc_decode_frame(frame, Y_size, height, width)
+            except Exception as e:
+                stop_event.set()
+                raise ValueError(f"💥 致命失敗：{e} 影片可能無嵌入資訊或已被壓縮失真！")
 
-            # Enforce max possible bits from the video carrier size
-            max_possible_bits = total_frames * width * height
-
-            # 🌟 呼叫 Numba 加速引擎，瞬間掃描並還原數百萬像素
-            bit_idx, target_bits, finished_extracting, error_code = pee_extract_core_numba(
-                G, bit_buffer, bit_idx, target_bits, height, width, max_possible_bits
-            )
-
-            # 如果解析出來的目標位元數大於目前緩衝區大小，動態擴容
-            if target_bits > len(bit_buffer):
-                print(f"🔄 偵測到目標容量 {target_bits} bits，正在動態擴容緩衝區...")
-                new_buffer = np.zeros(target_bits + 10_000_000, dtype=np.uint8)
-                new_buffer[:len(bit_buffer)] = bit_buffer
+            # 累積本幀位元至全域緩衝區
+            nchunk = len(payload_chunk)
+            if bit_idx + nchunk > len(bit_buffer):
+                new_buffer = np.zeros(bit_idx + nchunk + 10_000_000, dtype=np.uint8)
+                new_buffer[:bit_idx] = bit_buffer[:bit_idx]
                 bit_buffer = new_buffer
+            bit_buffer[bit_idx:bit_idx + nchunk] = payload_chunk
+            bit_idx += nchunk
+
+            # 一旦集滿 32-bit 長度標頭，計算總目標位元數
+            if target_bits == 0 and bit_idx >= 32:
+                val_len = 0
+                for k in range(32):
+                    val_len = (val_len << 1) | int(bit_buffer[k])
+                max_possible_bits = total_frames * width * height
+                if not (0 < val_len * 8 <= max_possible_bits):
+                    stop_event.set()
+                    raise ValueError("💥 致命失敗：讀到無效的檔案長度標頭。影片可能無嵌入資訊或已被壓縮失真！")
+                target_bits = 32 + val_len * 8
+                if target_bits > len(bit_buffer):
+                    print(f"🔄 偵測到目標容量 {target_bits} bits，正在動態擴容緩衝區...")
+                    new_buffer = np.zeros(target_bits + 10_000_000, dtype=np.uint8)
+                    new_buffer[:bit_idx] = bit_buffer[:bit_idx]
+                    bit_buffer = new_buffer
+
+            if target_bits > 0 and bit_idx >= target_bits:
+                finished_extracting = True
 
             if progress_callback and frame_count % 10 == 0:
                 progress_callback(frame_count, total_frames, bit_idx, target_bits)
@@ -486,15 +695,11 @@ def decode_video_multi(video_path, output_dir, progress_callback=None):
             if frame_count % 30 == 0:
                 print(f"  -> 已掃描 {frame_count} 幀, 提取進度 {bit_idx}/{target_bits} bits")
 
-            if error_code == 1:
-                stop_event.set()
-                raise ValueError("💥 致命失敗：讀到無效的檔案長度標頭。影片可能無嵌入資訊或已被壓縮失真！")
-
         if finished_extracting:
             stop_event.set()
             break
 
-    if target_bits > 0 and bit_idx == target_bits:
+    if target_bits > 0 and bit_idx >= target_bits:
         payload_bits = bit_buffer[32: target_bits]
         compressed_bytes = bits_to_bytes(payload_bits)
 
