@@ -46,7 +46,8 @@ class FetchInfoThread(QThread):
                 'audio_multistreams': True,
                 'js_runtimes': {
                     'node': {'path': node_path} if node_path != 'node' else {}
-                }
+                },
+                'remote_components': ['ejs:github', 'ejs:npm']
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -129,6 +130,7 @@ class DownloadThread(QThread):
                     'js_runtimes': {
                         'node': {'path': node_path} if node_path != 'node' else {}
                     },
+                    'remote_components': ['ejs:github', 'ejs:npm'],
                     'ffmpeg_location': ffmpeg_path,
                     'outtmpl': video_outtmpl,
                     'progress_hooks': [make_hook("Downloading Video", current_step)],
@@ -168,6 +170,7 @@ class DownloadThread(QThread):
                     'js_runtimes': {
                         'node': {'path': node_path} if node_path != 'node' else {}
                     },
+                    'remote_components': ['ejs:github', 'ejs:npm'],
                     'ffmpeg_location': ffmpeg_path,
                     'outtmpl': audio_outtmpl,
                     'progress_hooks': [make_hook(f"Downloading Audio ({lang})", current_step)],
