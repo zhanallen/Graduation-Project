@@ -47,18 +47,30 @@
 
 ```
 DE/
-├── src/                        # 核心功能程式碼
+├── src/                        # 核心功能程式碼 (GUI 應用程式與演算法庫)
 │   ├── download_app.py         # MultiAudioDownloader (多音軌多語系影片下載 GUI)
 │   ├── embed_app.py            # StegoPacker (多音軌 PEE 隱寫封裝 GUI)
 │   ├── player_app.py           # StegoPlayer (即時解密多音軌播放器 GUI，含科技感儀表板)
 │   ├── pee_stego.py            # PEE Steganography 核心演算法庫 (Numba 加速)
+│   ├── i18n_detector.py        # 智慧語系與 GeoIP 定位核心檢測器
 │   └── pyinstaller_utils.py    # PyInstaller 打包路徑與可移植性工具
+│
+├── for_ip/                     # 🌍 智慧語系與 IP 安全性管理模組 (FastAPI 儀表板)
+│   ├── i18n_security/          # 核心安全性中介軟體 (防偽造與語系判定)
+│   │   ├── data/               # 存放離線 IP 資料庫 (如 dbip-city-lite.mmdb)
+│   │   ├── middleware.py       # IP 查驗與語系匹配邏輯
+│   │   ├── schemas.py          # Context 資料結構定義 (Pydantic)
+│   │   └── update_assets.py    # 自動化維運更新腳本 (Cloudflare IP 與 DB-IP)
+│   ├── main.py                 # FastAPI Web API 與監控儀表板主入口
+│   ├── requirements_web.txt    # Web 模組獨立依賴清單
+│   ├── run_dashboard.bat       # 一鍵啟動 Web 儀表板監控介面腳本
+│   └── test_middleware.py      # 中介軟體的單元與安全測試腳本
 │
 ├── MultiAudioDownloader.spec   # 多音軌下載器的 PyInstaller 打包設定檔
 ├── StegoPacker.spec            # 封裝器的 PyInstaller 打包設定檔
 ├── StegoPlayer.spec            # 播放器的 PyInstaller 打包設定檔
 ├── build.bat                   # Windows 平台下一鍵打包 Executable 執行檔腳本
-├── requirements.txt            # 專案依賴套件清單
+├── requirements.txt            # 專案主程式依賴套件清單
 ├── .gitignore                  # Git 排除清單 (防止大型影片與編譯快取上傳)
 └── README.md                   # 專案說明文件 (本檔案)
 ```
@@ -167,9 +179,18 @@ pip install -r requirements.txt
 ```
 
 ### 2. 執行應用程式
-*   **啟動下載器**：`python src/download_app.py`
-*   **啟動封裝器**：`python src/embed_app.py`
-*   **啟動播放器**：`python src/player_app.py`
+*   **啟動下載器 (MultiAudioDownloader)**：`python src/download_app.py`
+*   **啟動封裝器 (StegoPacker)**：`python src/embed_app.py`
+*   **啟動播放器 (StegoPlayer)**：`python src/player_app.py`
+*   **啟動智慧語系與 IP 安全監控儀表板 (FastAPI Dashboard)**：
+    *   **方法一**：在 Windows 下直接雙擊執行 `for_ip/run_dashboard.bat`。
+    *   **方法二**：安裝 Web 依賴後啟動 FastAPI：
+        ```bash
+        pip install -r for_ip/requirements_web.txt
+        cd for_ip
+        python main.py
+        ```
+        啟動後開啟瀏覽器訪問 `http://127.0.0.1:8000`。
 
 ---
 
