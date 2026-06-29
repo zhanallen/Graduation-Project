@@ -83,88 +83,53 @@ DE/
 
 ```mermaid
 flowchart TD
-    %% Define Styles
-    classDef embed fill:#064e3b,stroke:#34d399,stroke-width:1px,color:#fff;
-    classDef extract fill:#581c87,stroke:#c084fc,stroke-width:1px,color:#fff;
-    classDef decision fill:#1e293b,stroke:#475569,stroke-width:1px,color:#fff;
-    classDef math fill:#0f172a,stroke:#38bdf8,stroke-width:1px,color:#fff;
-
-    subgraph Embedding ["左：Coltuc 藏密嵌入原理 (Embedding Process)"]
-        E_Start(["取一個不相交 2×2 區塊：nw, n, w, x"])
-        E_CheckBound{"process band 檢查：
-        nw, n, w, x 皆 ∈ [2, 245] ?"}
-        E_SkipBound["跳過 (記入 skip-map)，
-        區塊保持原值"]
-        E_Predict["JPEG4 預測：x̂ = n + w − nw
-        預測誤差 p = x − x̂"]
-
-        E_CheckRange{"判斷預測誤差 p 的區間"}
-
-        E_Range_Expand["可嵌入區間：−1 ≤ p ≤ 1"]
-        E_ReadBit["讀取 1 bit 秘密資料 b"]
-        E_CalcExpand["擴張：P = 2p + b"]
-
-        E_Range_Shift_Pos["p > 1"]
-        E_Shift_Pos["平移避讓：P = p + 2"]
-        E_Range_Shift_Neg["p < −1"]
-        E_Shift_Neg["平移避讓：P = p − 2"]
-
-        E_Distribute["四等分散 (式4)：Δ = P − p
-        u_x=⌊Δ/4⌋, u_w=⌊(Δ+1)/4⌋,
-        u_nw=⌊(Δ+2)/4⌋, u_n=⌊(Δ+3)/4⌋"]
-        E_WriteBlock["寫回 2×2 脈絡 (式5)：
-        X=x+u_x, N=n−u_n,
-        W=w−u_w, NW=nw+u_nw
-        (每像素變動 ≤ ±1，絕不溢位)"]
-        E_End(["輸出 Stego 隱寫幀 + 壓縮 skip-map (LSB 旁通道)"])
+    subgraph Embedding ["藏密嵌入流程 (Embedding Process)"]
+        E1[讀取 2x2 像素區塊]
+        E2{像素值是否均在安全邊界內?}
+        E_Skip[跳過此區塊並於 skip-map 標記]
+        E3[計算 JPEG4 像素預測誤差 p]
+        E4{判斷預測誤差 p 區間}
+        E_Embed[讀取 1 bit 秘密資料進行誤差擴張]
+        E_Shift[誤差進行平移以避讓重疊]
+        E5[將誤差變化四等分散至 2x2 四個像素]
+        E6[寫回像素並輸出密寫影片與壓縮 skip-map]
     end
-    class E_Start,E_Predict,E_SkipBound,E_Range_Expand,E_ReadBit,E_CalcExpand,E_Range_Shift_Pos,E_Shift_Pos,E_Range_Shift_Neg,E_Shift_Neg,E_Distribute,E_WriteBlock,E_End embed;
-    class E_CheckBound,E_CheckRange decision;
 
-    subgraph Extraction ["右：解密與無損還原原理 (Extraction & Restoration)"]
-        X_Start(["讀 LSB 旁通道還原 skip-map，逐塊掃描 marked 區塊 X,N,W,NW"])
-        X_CheckSkip{"skip-map 標示本塊為跳過？"}
-        X_SkipBound["跳過不處理，區塊保持原值"]
-        X_Predict["以 marked 脈絡重算預測 (式6)：
-        x̂_X = N + W − NW
-        含密誤差 P = X − x̂_X (= 2p + b)"]
-
-        X_CheckEmbed{"P 是否落在 [−2, 3] ?"}
-        X_GetBit["提取秘密位元 b = LSB(P)，
-        並還原 p = ⌊P/2⌋"]
-        X_No_Data["平移塊：
-        P≥4 → p=P−2；P≤−4 → p=P+2"]
-
-        X_Distribute["重算 Δ = P − p 與四等分 u (式4)"]
-        X_RecoverBlock["逆變換還原原始脈絡 (式9)：
-        x=X−u_x, n=N+u_n,
-        w=W+u_w, nw=NW−u_nw"]
-        X_End(["100% 位元還原原始載體幀 (MD5 吻合)"])
+    subgraph Extraction ["解密與無損還原流程 (Extraction & Restoration)"]
+        X1[讀取 skip-map 並掃描 marked 區塊]
+        X2{skip-map 是否標記為跳過?}
+        X_Skip[保持原值不處理]
+        X3[重算含密像素預測誤差 P]
+        X4{判斷誤差 P 是否包含資料?}
+        X_Extract[提取 LSB 位元資料並還原原始誤差]
+        X_Unshift[逆向平移還原原始誤差]
+        X5[逆變換四等分變化量還原原始像素]
+        X6[100% 位元級無損還原原始影片載體]
     end
-    class X_Start,X_Predict,X_SkipBound,X_GetBit,X_No_Data,X_Distribute,X_RecoverBlock,X_End extract;
-    class X_CheckSkip,X_CheckEmbed decision;
 
-    %% 關聯線段
-    E_Start --> E_CheckBound
-    E_CheckBound -->|否| E_SkipBound
-    E_CheckBound -->|是| E_Predict
-    E_Predict --> E_CheckRange
-    E_CheckRange --> E_Range_Expand
-    E_Range_Expand --> E_ReadBit --> E_CalcExpand --> E_Distribute
-    E_CheckRange --> E_Range_Shift_Pos --> E_Shift_Pos --> E_Distribute
-    E_CheckRange --> E_Range_Shift_Neg --> E_Shift_Neg --> E_Distribute
-    E_Distribute --> E_WriteBlock --> E_End
+    E1 --> E2
+    E2 -->|否| E_Skip
+    E2 -->|是| E3
+    E3 --> E4
+    E4 -->|可嵌入區間| E_Embed
+    E4 -->|平移區間| E_Shift
+    E_Embed --> E5
+    E_Shift --> E5
+    E_Skip --> E6
+    E5 --> E6
 
-    X_Start --> X_CheckSkip
-    X_CheckSkip -->|是| X_SkipBound
-    X_CheckSkip -->|否| X_Predict
-    X_Predict --> X_CheckEmbed
-    X_CheckEmbed -->|是| X_GetBit --> X_Distribute
-    X_CheckEmbed -->|否| X_No_Data --> X_Distribute
-    X_Distribute --> X_RecoverBlock --> X_End
+    X1 --> X2
+    X2 -->|是| X_Skip
+    X2 -->|否| X3
+    X3 --> X4
+    X4 -->|嵌入區間| X_Extract
+    X4 -->|平移區間| X_Unshift
+    X_Extract --> X5
+    X_Unshift --> X5
+    X_Skip --> X6
+    X5 --> X6
 
-    %% 跨欄關聯 (說明可逆性)
-    E_End -.->|密寫影片傳輸| X_Start
+    E6 -.->|密寫影片與 skip-map 傳輸| X1
 ```
 
 
